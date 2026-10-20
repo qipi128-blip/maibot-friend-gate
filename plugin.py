@@ -394,6 +394,10 @@ class FriendGatePlugin(MaiBotPlugin):
         if user_id in blacklist:
             return ReviewDecision(False, 1.0, "命中黑名单", source="filter")
 
+        profile = record.profile or ApplicantProfile(user_id=user_id)
+        if profile.already_friend and self.config.filters.skip_if_already_friend:
+            return ReviewDecision(True, 1.0, "申请人已经是好友", noop=True, source="skip")
+
         keyword = contains_blacklisted_keyword(comment, list(self.config.filters.blacklist_keywords))
         if keyword:
             return ReviewDecision(False, 1.0, f"验证消息命中黑名单关键词：{keyword}", source="filter")
@@ -401,7 +405,6 @@ class FriendGatePlugin(MaiBotPlugin):
         if self.config.filters.reject_empty_comment and not comment:
             return ReviewDecision(False, 1.0, "验证消息为空", source="filter")
 
-        profile = record.profile or ApplicantProfile(user_id=user_id)
         if (
             self.config.filters.min_qq_level > 0
             and profile.level > 0
@@ -413,9 +416,6 @@ class FriendGatePlugin(MaiBotPlugin):
                 f"QQ 等级 {profile.level} 低于配置下限 {self.config.filters.min_qq_level}",
                 source="filter",
             )
-
-        if profile.already_friend and self.config.filters.skip_if_already_friend:
-            return ReviewDecision(True, 1.0, "申请人已经是好友", noop=True, source="skip")
 
         mode = str(strategy.mode or "llm").strip().lower()
         if mode == "auto_approve":

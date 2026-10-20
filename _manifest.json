@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "id": "github.qipi128-blip.friend-gate",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "name": "好友申请智能审批",
   "description": "让模型阅读好友申请资料与验证消息，自动决定通过或拒绝；支持白黑名单、置信度阈值、管理员兜底、自动备注与欢迎语。",
   "author": {
