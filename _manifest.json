@@ -1,0 +1,52 @@
+{
+  "manifest_version": 2,
+  "id": "github.qipi128-blip.friend-gate",
+  "version": "1.0.0",
+  "name": "好友申请智能审批",
+  "description": "让模型阅读好友申请资料与验证消息，自动决定通过或拒绝；支持白黑名单、置信度阈值、管理员兜底、自动备注与欢迎语。",
+  "author": {
+    "name": "Tyler",
+    "url": "https://github.com/qipi128-blip"
+  },
+  "license": "MIT",
+  "urls": {
+    "repository": "https://github.com/qipi128-blip/maibot-friend-gate",
+    "homepage": "https://github.com/qipi128-blip/maibot-friend-gate",
+    "documentation": "https://github.com/qipi128-blip/maibot-friend-gate#readme",
+    "issues": "https://github.com/qipi128-blip/maibot-friend-gate/issues"
+  },
+  "host_application": {
+    "min_version": "1.2.0",
+    "max_version": "999.999.999"
+  },
+  "sdk": {
+    "min_version": "2.5.0",
+    "max_version": "2.99.99"
+  },
+  "dependencies": [
+    {
+      "type": "python_package",
+      "name": "aiohttp",
+      "version_spec": ">=3.9.0"
+    }
+  ],
+  "plugin_type": "management",
+  "display": {
+    "icon": {
+      "type": "local",
+      "value": "assets/icon.svg",
+      "fallback": "user-check",
+      "background": "#2563eb"
+    }
+  },
+  "capabilities": [
+    "llm.generate",
+    "config.get"
+  ],
+  "i18n": {
+    "default_locale": "zh-CN",
+    "supported_locales": [
+      "zh-CN"
+    ]
+  }
+}

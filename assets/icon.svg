@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="好友申请智能审批">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3b82f6"/>
+      <stop offset="1" stop-color="#1d4ed8"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+  <circle cx="58" cy="46" r="20" fill="#ffffff" opacity="0.95"/>
+  <path d="M24 104c0-20 15-34 34-34s34 14 34 34" fill="#ffffff" opacity="0.95"/>
+  <circle cx="95" cy="88" r="22" fill="#22c55e"/>
+  <path d="M85 88l7 7 14-15" fill="none" stroke="#ffffff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
