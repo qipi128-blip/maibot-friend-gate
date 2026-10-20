@@ -252,6 +252,8 @@ class FriendGatePlugin(MaiBotPlugin):
         record = FriendRequestRecord(flag=flag, user_id=user_id, comment=comment)
         self._pending[user_id] = record.to_dict()
         self._save_state()
+        # 先计入频率限制，避免模型调用失败 / 转人工的申请绕过小时与每日上限。
+        self._register_decision()
 
         try:
             record.profile = await self._fetch_profile(user_id)
@@ -609,7 +611,6 @@ class FriendGatePlugin(MaiBotPlugin):
 
         status = "approved" if decision.approve else "rejected"
         self._finish_record(record, status, decision, remark=remark)
-        self._register_decision()
         self._save_state()
 
         if decision.approve:
