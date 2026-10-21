@@ -242,6 +242,41 @@ class FriendGateTestCase(unittest.IsolatedAsyncioTestCase):
         self.fail(f"等待私聊文本超时: {needle}")
         return ""
 
+    async def test_quiet_hours_defer_then_process(self) -> None:
+        self.config_data["quiet_hours"]["enabled"] = True
+        self.config_data["quiet_hours"]["start"] = "00:00"
+        self.config_data["quiet_hours"]["end"] = "23:59"
+        self.plugin.set_plugin_config(self.config_data)
+        self.plugin._is_quiet_now = lambda: True
+        await self._start()
+        await self.plugin._stop_quiet_task()
+
+        await self.server.push_friend_request(comment="静默时来的申请")
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            item = self.plugin._pending.get("10001")
+            if item and item.get("status") == "deferred":
+                break
+            await asyncio.sleep(0.05)
+
+        self.assertEqual(self.plugin._pending["10001"]["status"], "deferred")
+        self.assertEqual(self.context.llm_calls, [])
+        self.assertEqual(
+            [params for action, params in self.server.actions if action == "set_friend_add_request"],
+            [],
+        )
+        self.assertEqual(
+            [params for action, params in self.server.actions if action == "send_private_msg"],
+            [],
+        )
+
+        self.plugin._is_quiet_now = lambda: False
+        await self.plugin._process_deferred_requests()
+        await self._wait_processed()
+        set_actions = [params for action, params in self.server.actions if action == "set_friend_add_request"]
+        self.assertEqual(len(set_actions), 1)
+        self.assertTrue(set_actions[0]["approve"])
+
     async def test_approve_flow(self) -> None:
         await self._start()
         await self.server.push_friend_request(comment="麦麦你好，我是群友")
@@ -370,6 +405,26 @@ class FriendGateTestCase(unittest.IsolatedAsyncioTestCase):
 
 class ParserTestCase(unittest.TestCase):
     """模型输出解析测试。"""
+
+    def test_is_in_quiet_hours(self) -> None:
+        from datetime import datetime
+
+        self.assertTrue(
+            plugin_module.is_in_quiet_hours(datetime(2026, 1, 1, 2, 30), start="00:00", end="08:00")
+        )
+        self.assertFalse(
+            plugin_module.is_in_quiet_hours(datetime(2026, 1, 1, 9, 0), start="00:00", end="08:00")
+        )
+        # 跨午夜
+        self.assertTrue(
+            plugin_module.is_in_quiet_hours(datetime(2026, 1, 1, 23, 30), start="22:00", end="07:00")
+        )
+        self.assertTrue(
+            plugin_module.is_in_quiet_hours(datetime(2026, 1, 1, 6, 0), start="22:00", end="07:00")
+        )
+        self.assertFalse(
+            plugin_module.is_in_quiet_hours(datetime(2026, 1, 1, 12, 0), start="22:00", end="07:00")
+        )
 
     def test_parse_json_fenced(self) -> None:
         decision = decision_module.parse_review_decision(

@@ -11,8 +11,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
+import re
 import time
 from datetime import datetime
 from pathlib import Path
@@ -41,6 +43,35 @@ _DECISION_TIME_RETENTION_SECONDS = 24 * 3600
 _FRIEND_CACHE_SECONDS = 300
 
 
+def _parse_hhmm(value: str) -> int | None:
+    """解析 HH:MM 为当天分钟数。"""
+
+    match = re.match(r"^\s*(\d{1,2})\s*[:：]\s*(\d{1,2})\s*$", str(value or ""))
+    if not match:
+        return None
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    return hour * 60 + minute
+
+
+def is_in_quiet_hours(moment: datetime, *, start: str, end: str) -> bool:
+    """判断某个时间点是否落在免打扰时段内（支持跨午夜）。"""
+
+    start_minutes = _parse_hhmm(start)
+    end_minutes = _parse_hhmm(end)
+    if start_minutes is None or end_minutes is None:
+        return False
+    if start_minutes == end_minutes:
+        return False
+
+    current = moment.hour * 60 + moment.minute
+    if start_minutes < end_minutes:
+        return start_minutes <= current < end_minutes
+    return current >= start_minutes or current < end_minutes
+
+
 class FriendGatePlugin(MaiBotPlugin):
     """好友申请智能审批插件。"""
 
@@ -65,6 +96,7 @@ class FriendGatePlugin(MaiBotPlugin):
         self._endpoint: NapCatEndpoint | None = None
         self._started = False
         self._tasks: set[asyncio.Task[Any]] = set()
+        self._quiet_task: asyncio.Task[None] | None = None
 
     # ---------------------------------------------------------------- 生命周期
 
@@ -84,11 +116,13 @@ class FriendGatePlugin(MaiBotPlugin):
             )
             return
         self._start_client()
+        self._ensure_quiet_task()
         self.ctx.logger.info("好友申请智能审批已加载，正在连接 NapCat: %s", self._endpoint.safe_url)
 
     async def on_unload(self) -> None:
         """停止连接并保存状态。"""
 
+        await self._stop_quiet_task()
         for task in list(self._tasks):
             if not task.done():
                 task.cancel()
@@ -115,11 +149,13 @@ class FriendGatePlugin(MaiBotPlugin):
         self._endpoint = new_endpoint
 
         if not self.config.plugin.enabled:
+            await self._stop_quiet_task()
             await self._stop_client()
             self.ctx.logger.info("好友申请智能审批配置已更新：插件已停用（version=%s）", version)
             return
 
         if new_endpoint is None:
+            await self._stop_quiet_task()
             await self._stop_client()
             self.ctx.logger.warning("好友申请智能审批配置已更新，但未找到有效的 NapCat 连接信息")
             return
@@ -127,6 +163,8 @@ class FriendGatePlugin(MaiBotPlugin):
         if old_endpoint != new_endpoint or self._client is None:
             await self._stop_client()
             self._start_client()
+        await self._stop_quiet_task()
+        self._ensure_quiet_task()
         self.ctx.logger.info("好友申请智能审批配置已更新（version=%s）", version)
 
     # ---------------------------------------------------------------- NapCat 客户端
@@ -183,6 +221,84 @@ class FriendGatePlugin(MaiBotPlugin):
         if client is not None:
             await client.stop()
 
+    def _ensure_quiet_task(self) -> None:
+        """确保免打扰结束检查任务正在运行。"""
+
+        if not self.config.plugin.enabled:
+            return
+        if self._quiet_task is not None and not self._quiet_task.done():
+            return
+        self._quiet_task = asyncio.create_task(self._quiet_loop())
+
+    async def _stop_quiet_task(self) -> None:
+        """停止免打扰结束检查任务。"""
+
+        task = self._quiet_task
+        self._quiet_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+
+    async def _quiet_loop(self) -> None:
+        """免打扰结束后重新取出暂存的申请。"""
+
+        while True:
+            try:
+                if self.config.plugin.enabled:
+                    await self._process_deferred_requests()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.ctx.logger.error("免打扰申请恢复任务异常: %s", exc, exc_info=True)
+            await asyncio.sleep(max(10, int(self.config.quiet_hours.check_interval_seconds)))
+
+    def _is_quiet_now(self) -> bool:
+        """判断当前是否处于免打扰时段。"""
+
+        quiet = self.config.quiet_hours
+        if not quiet.enabled:
+            return False
+        timezone_name = str(quiet.timezone or self.config.plugin.timezone or "Asia/Shanghai").strip()
+        try:
+            now = datetime.now(tz=ZoneInfo(timezone_name))
+        except (ZoneInfoNotFoundError, ValueError):
+            now = datetime.now()
+        return is_in_quiet_hours(now, start=quiet.start, end=quiet.end)
+
+    async def _process_deferred_requests(self) -> int:
+        """处理免打扰期间暂存、且当前已允许处理的申请。"""
+
+        if self._is_quiet_now():
+            return 0
+        client = self._client
+        if client is None or not client.connected:
+            return 0
+
+        deferred: list[tuple[str, dict[str, Any]]] = [
+            (key, dict(value))
+            for key, value in list(self._pending.items())
+            if isinstance(value, dict) and str(value.get("status") or "") == "deferred"
+        ]
+        processed = 0
+        for key, record_data in deferred:
+            if not self._within_rate_limit():
+                self.ctx.logger.warning("免打扰结束，但已达到自动处理频率上限，剩余申请继续暂存")
+                break
+            record = FriendRequestRecord.from_dict(record_data)
+            if record is None:
+                self._pending.pop(key, None)
+                continue
+            record.status = "pending"
+            self._pending[key] = record.to_dict()
+            self._save_state()
+            self._register_decision()
+            processed += 1
+            await self._process_record(record)
+        if processed:
+            self.ctx.logger.info("免打扰结束，已恢复处理 %d 条好友申请", processed)
+        return processed
+
     async def _on_napcat_connected(self, client: NapCatClient) -> None:
         """连接建立后的回调。"""
 
@@ -223,10 +339,29 @@ class FriendGatePlugin(MaiBotPlugin):
     # ---------------------------------------------------------------- 申请处理
 
     async def _handle_friend_request(self, user_id: str, flag: str, comment: str) -> None:
-        """处理一条好友申请。"""
+        """处理一条好友申请（免打扰时段只暂存）。"""
 
         if self._is_duplicate(user_id, flag):
             self.ctx.logger.debug("忽略重复好友申请: qq=%s flag=%s", user_id, flag)
+            return
+
+        if self._is_quiet_now():
+            record = FriendRequestRecord(
+                flag=flag,
+                user_id=user_id,
+                comment=comment,
+                source="quiet_hours",
+            )
+            record.status = "deferred"
+            record.decision = ReviewDecision(
+                approve=False,
+                confidence=0.0,
+                reason="免打扰时段，暂不处理",
+                source="quiet_hours",
+            ).to_dict()
+            self._pending[user_id] = record.to_dict()
+            self._save_state()
+            self.ctx.logger.info("免打扰时段收到好友申请，已暂存: qq=%s flag=%s", user_id, flag)
             return
 
         if not self._within_rate_limit():
@@ -254,19 +389,25 @@ class FriendGatePlugin(MaiBotPlugin):
         self._save_state()
         # 先计入频率限制，避免模型调用失败 / 转人工的申请绕过小时与每日上限。
         self._register_decision()
+        await self._process_record(record)
+
+    async def _process_record(self, record: FriendRequestRecord) -> None:
+        """读取资料、判断并执行一条申请。"""
 
         try:
-            record.profile = await self._fetch_profile(user_id)
-            self._pending[user_id] = record.to_dict()
+            record.profile = await self._fetch_profile(record.user_id)
+            self._pending[record.user_id] = record.to_dict()
             self._save_state()
 
             decision = await self._decide(record)
             await self._apply(record, decision)
         except Exception as exc:
-            self.ctx.logger.error("处理好友申请失败: qq=%s error=%s", user_id, exc, exc_info=True)
+            self.ctx.logger.error(
+                "处理好友申请失败: qq=%s error=%s", record.user_id, exc, exc_info=True
+            )
             record.status = "error"
             record.last_error = str(exc)
-            self._pending[user_id] = record.to_dict()
+            self._pending[record.user_id] = record.to_dict()
             self._save_state()
             await self._notify_error(record, str(exc))
 
@@ -816,12 +957,22 @@ class FriendGatePlugin(MaiBotPlugin):
             )
 
         connection = "已连接" if self._client is not None and self._client.connected else "未连接"
+        quiet = self.config.quiet_hours
+        if quiet.enabled:
+            quiet_state = "当前静默中" if self._is_quiet_now() else "当前可处理"
+            quiet_text = f"{quiet.start}-{quiet.end}（{quiet_state}）"
+        else:
+            quiet_text = "未启用"
+        deferred_count = sum(
+            1 for item in pending if str(item.get("status") or "") == "deferred"
+        )
         lines = [
             "好友申请审批状态",
             f"插件：{'启用' if self.config.plugin.enabled else '停用'}"
             f"{'（演练模式）' if self.config.plugin.dry_run else ''}",
             f"NapCat：{connection}",
-            f"待处理：{len(pending)}",
+            f"免打扰：{quiet_text}",
+            f"待处理：{len(pending)}（其中免打扰暂存 {deferred_count}）",
             f"今日已处理：{self._count_today()}",
             f"累计：通过 {self._stats.get('approved', 0)}，拒绝 {self._stats.get('rejected', 0)}，"
             f"人工 {self._stats.get('manual', 0)}，跳过 {self._stats.get('skipped', 0)}",

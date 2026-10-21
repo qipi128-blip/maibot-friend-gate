@@ -20,7 +20,7 @@ class PluginSectionConfig(PluginConfigBase):
         description="演练模式：只做判断并通知管理员，不真正同意或拒绝申请",
     )
     timezone: str = Field(default="Asia/Shanghai", description="统计与日期使用的时区")
-    config_version: str = Field(default="1.0.0", description="配置版本")
+    config_version: str = Field(default="1.1.0", description="配置版本")
 
 
 class ConnectionConfig(PluginConfigBase):
@@ -189,12 +189,35 @@ class NotifyConfig(PluginConfigBase):
     include_avatar: bool = Field(default=False, description="通知中附带申请人头像")
 
 
+class QuietHoursConfig(PluginConfigBase):
+    """免打扰时段配置。
+
+    在此时段内收到的好友申请只记录、不判断、不通知、不同意/拒绝；
+    时段结束后由后台任务重新取出处理。
+    """
+
+    __ui_label__ = "免打扰时段"
+    __ui_icon__ = "moon"
+    __ui_order__ = 5
+
+    enabled: bool = Field(default=True, description="是否启用免打扰时段")
+    start: str = Field(default="00:00", description="免打扰开始时间，HH:MM")
+    end: str = Field(default="08:00", description="免打扰结束时间，HH:MM；可与开始时间跨午夜")
+    timezone: str = Field(default="Asia/Shanghai", description="免打扰时间使用的时区")
+    check_interval_seconds: int = Field(
+        default=60,
+        ge=10,
+        le=3600,
+        description="免打扰结束后检查待处理申请的间隔（秒）",
+    )
+
+
 class PromptConfig(PluginConfigBase):
     """提示词扩展配置。"""
 
     __ui_label__ = "提示词"
     __ui_icon__ = "message-square"
-    __ui_order__ = 5
+    __ui_order__ = 6
 
     persona_override: str = Field(
         default="",
@@ -214,6 +237,7 @@ class FriendGateConfig(PluginConfigBase):
     strategy: StrategyConfig = Field(default_factory=StrategyConfig)
     filters: FiltersConfig = Field(default_factory=FiltersConfig)
     notify: NotifyConfig = Field(default_factory=NotifyConfig)
+    quiet_hours: QuietHoursConfig = Field(default_factory=QuietHoursConfig)
     prompt: PromptConfig = Field(default_factory=PromptConfig)
 
 
